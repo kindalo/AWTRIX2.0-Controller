@@ -17,6 +17,11 @@
 #include <Wire.h>
 #include "SoftwareSerial.h"
 
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+#include <TimeLib.h>
+#include <ESP8266HTTPClient.h>
+
 #include <WiFiManager.h>
 #include <DoubleResetDetect.h>
 #include <Wire.h>
@@ -60,6 +65,8 @@ bool notify = false;
 int connectionTimout;
 int matrixTempCorrection = 0;
 
+bool dbg_updateMatrix = false;
+
 String version = "0.46";
 char awtrix_server[16] = "0.0.0.0";
 char Port[6] = "7001"; // AWTRIX Host Port, default = 7001
@@ -75,7 +82,11 @@ MenueControl myMenue;
 
 //update
 ESP8266WebServer server(80);
-const char *serverIndex = "<form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>";
+//const char *serverIndex = "<form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>";
+
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 0, 3600000); /* interval 60 mins */
+
 
 //resetdetector
 #define DRD_TIMEOUT 5.0
@@ -93,6 +104,10 @@ int myCounter2;
 
 bool ignoreServer = false;
 int menuePointer;
+bool appRun = true;
+bool appRunClock = true;
+bool appRunAlert = true;
+bool appAlertFlag = false;
 
 //Taster_mid
 int tasterPin[] = {D0, D4, D8};
@@ -134,6 +149,8 @@ int newBri;
 static unsigned long lastTimeLDRCheck = 0;
 bool autoBrightness;
 
+bool inFade = false;
+
 #define I2C_SDA D3
 #define I2C_SCL D1
 
@@ -142,6 +159,8 @@ bool autoBrightness;
 #endif
 
 bool updating = false;
+
+void appClock(int input);
 
 // Audio
 
@@ -317,6 +336,19 @@ int checkTaster(int nr)
 			{
 				sendToServer(JS);
 			}
+
+			if (appRun)
+			{
+				switch (nr)
+				{
+					case 0:
+					case 2:
+						//dfmp3.playMp3FolderTrack(3); /* click */
+						appClock(1);
+						break;
+				}
+			}
+
 			pushed[nr] = false;
 			return 1;
 		}
@@ -364,6 +396,15 @@ int checkTaster(int nr)
 				sendToServer(JS);
 			}
 
+			if (appRun)
+			{
+				switch (nr)
+				{
+					case 1:
+						dfmp3.playMp3FolderTrack(4); /* enter */
+						break;
+				}
+			}
 			blockTaster[nr] = true;
 			blockTaster2[nr] = true;
 			pushed[nr] = false;
@@ -705,6 +746,9 @@ void updateMatrix(byte payload[], int length)
 
 		connectionTimout = millis();
 
+// KENDBG
+//if ((payload[0] != 0) && (payload[0] != 6))Serial.println(String(__FILE__)+"("+String(__LINE__)+") payload0 = "+String(payload[0]));
+
 		switch (payload[0])
 		{
 		case 0:
@@ -725,12 +769,13 @@ void updateMatrix(byte payload[], int length)
 			}
 
 			matrix->print(utf8ascii(myText));
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") draw text, ("+String(x_coordinate + 1)+","+String(y_coordinate + y_offset)+")"); /*KENDBG*/
 			break;
 		}
 		case 1:
 		{
 			//Command 1: DrawBMP
-
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") draw bmp"); /*KENDBG*/
 			//Prepare the coordinates
 			uint16_t x_coordinate = int(payload[1] << 8) + int(payload[2]);
 			uint16_t y_coordinate = int(payload[3] << 8) + int(payload[4]);
@@ -759,7 +804,7 @@ void updateMatrix(byte payload[], int length)
 		case 2:
 		{
 			//Command 2: DrawCircle
-
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") draw circle"); /*KENDBG*/
 			//Prepare the coordinates
 			uint16_t x0_coordinate = int(payload[1] << 8) + int(payload[2]);
 			uint16_t y0_coordinate = int(payload[3] << 8) + int(payload[4]);
@@ -770,7 +815,7 @@ void updateMatrix(byte payload[], int length)
 		case 3:
 		{
 			//Command 3: FillCircle
-
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") fill circle"); /*KENDBG*/
 			//Prepare the coordinates
 			uint16_t x0_coordinate = int(payload[1] << 8) + int(payload[2]);
 			uint16_t y0_coordinate = int(payload[3] << 8) + int(payload[4]);
@@ -781,7 +826,7 @@ void updateMatrix(byte payload[], int length)
 		case 4:
 		{
 			//Command 4: DrawPixel
-
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") draw pixel"); /*KENDBG*/
 			//Prepare the coordinates
 			uint16_t x0_coordinate = int(payload[1] << 8) + int(payload[2]);
 			uint16_t y0_coordinate = int(payload[3] << 8) + int(payload[4]);
@@ -791,7 +836,7 @@ void updateMatrix(byte payload[], int length)
 		case 5:
 		{
 			//Command 5: DrawRect
-
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") draw rect"); /*KENDBG*/
 			//Prepare the coordinates
 			uint16_t x0_coordinate = int(payload[1] << 8) + int(payload[2]);
 			uint16_t y0_coordinate = int(payload[3] << 8) + int(payload[4]);
@@ -803,7 +848,7 @@ void updateMatrix(byte payload[], int length)
 		case 6:
 		{
 			//Command 6: DrawLine
-
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") draw line - "+String(payload[9])+","+String(payload[10])+","+String(payload[11])); /*KENDBG*/
 			//Prepare the coordinates
 			uint16_t x0_coordinate = int(payload[1] << 8) + int(payload[2]);
 			uint16_t y0_coordinate = int(payload[3] << 8) + int(payload[4]);
@@ -816,7 +861,7 @@ void updateMatrix(byte payload[], int length)
 		case 7:
 		{
 			//Command 7: FillMatrix
-
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") fill matrix"); /*KENDBG*/
 			matrix->fillScreen(matrix->Color(payload[1], payload[2], payload[3]));
 			break;
 		}
@@ -824,6 +869,7 @@ void updateMatrix(byte payload[], int length)
 		case 8:
 		{
 			//Command 8: Show
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") show"); /*KENDBG*/
 			if (notify)
 			{
 				matrix->drawPixel(31, 0, matrix->Color(200, 0, 0));
@@ -834,6 +880,7 @@ void updateMatrix(byte payload[], int length)
 		case 9:
 		{
 			//Command 9: Clear
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") clear"); /*KENDBG*/
 			matrix->clear();
 			break;
 		}
@@ -841,7 +888,7 @@ void updateMatrix(byte payload[], int length)
 		{
 			//deprecated
 			//Command 10: Play
-
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") [deprecated] set volume and play mp3 folder track"); /*KENDBG*/
 			dfmp3.setVolume(payload[2]);
 			delay(10);
 			dfmp3.playMp3FolderTrack(payload[1]);
@@ -851,12 +898,14 @@ void updateMatrix(byte payload[], int length)
 		case 11:
 		{
 			//Command 11: reset
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") reset "); /*KENDBG*/
 			ESP.reset();
 			break;
 		}
 		case 12:
 		{
 			//Command 12: GetMatrixInfo
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") get Matrix info "); /*KENDBG*/
 			StaticJsonBuffer<400> jsonBuffer;
 			JsonObject &root = jsonBuffer.createObject();
 			root["type"] = "MatrixInfo";
@@ -905,6 +954,7 @@ void updateMatrix(byte payload[], int length)
 		}
 		case 13:
 		{
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") set brightness : "+String(payload[1])); /*KENDBG*/
 			if (autoBrightness)
 			{
 				int bri = payload[1];
@@ -920,6 +970,7 @@ void updateMatrix(byte payload[], int length)
 		}
 		case 14:
 		{
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") save "); /*KENDBG*/
 			bool reset = false;
 			autoBrightness = int(payload[1]);
 			minBrightness = int(payload[2]);
@@ -948,7 +999,7 @@ void updateMatrix(byte payload[], int length)
 		}
 		case 15:
 		{
-
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") reset "); /*KENDBG*/
 			matrix->clear();
 			matrix->setTextColor(matrix->Color(255, 0, 0));
 			matrix->setCursor(6, 6);
@@ -969,6 +1020,7 @@ void updateMatrix(byte payload[], int length)
 		}
 		case 16:
 		{
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") send to server "); /*KENDBG*/
 			sendToServer("ping");
 			break;
 		}
@@ -976,19 +1028,21 @@ void updateMatrix(byte payload[], int length)
 		{
 
 			//Command 17: Volume
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") set Volume: "+String(payload[1])); /*KENDBG*/
 			dfmp3.setVolume(payload[1]);
 			break;
 		}
 		case 18:
 		{
 			//Command 18: Play
-
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") play mp3 folder track: "+String(payload[1])); /*KENDBG*/
 			dfmp3.playMp3FolderTrack(payload[1]);
 			break;
 		}
 		case 19:
 		{
 			//Command 18: Stop
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") stop Advertisement"); /*KENDBG*/
 			dfmp3.stopAdvertisement();
 			delay(50);
 			dfmp3.stop();
@@ -997,6 +1051,7 @@ void updateMatrix(byte payload[], int length)
 		case 20:
 		{
 			//change the connection...
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") change the connection..."); /*KENDBG*/
 			USBConnection = false;
 			WIFIConnection = false;
 			firstStart = true;
@@ -1005,6 +1060,7 @@ void updateMatrix(byte payload[], int length)
 		case 21:
 		{
 			//multicolor...
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") multi-color"); /*KENDBG*/
 			uint16_t x_coordinate = int(payload[1] << 8) + int(payload[2]);
 			uint16_t y_coordinate = int(payload[3] << 8) + int(payload[4]);
 			matrix->setCursor(x_coordinate + 1, y_coordinate + y_offset);
@@ -1046,6 +1102,7 @@ void updateMatrix(byte payload[], int length)
 		}
 		case 22:
 		{
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") print scroll text"); /*KENDBG*/
 			String myJSON = "";
 			for (int i = 1; i < length; i++)
 			{
@@ -1091,7 +1148,7 @@ void updateMatrix(byte payload[], int length)
 		case 23:
 		{
 			//Command 23: DrawFilledRect
-
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") Draw Filled Rect"); /*KENDBG*/
 			//Prepare the coordinates
 			uint16_t x0_coordinate = int(payload[1] << 8) + int(payload[2]);
 			uint16_t y0_coordinate = int(payload[3] << 8) + int(payload[4]);
@@ -1102,24 +1159,27 @@ void updateMatrix(byte payload[], int length)
 		}
 		case 24:
 		{
-
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") loop Blobal Track: "+String(payload[1])); /*KENDBG*/
 			dfmp3.loopGlobalTrack(payload[1]);
 			break;
 		}
 		case 25:
 		{
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") play advertisement: "+String(payload[1])); /*KENDBG*/
 			dfmp3.playAdvertisement(payload[1]);
 			break;
 		}
 		case 26:
 		{
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") set notify: "+String(payload[1])); /*KENDBG*/
 			notify = payload[1];
 			break;
 		}
 		case 27:
 		{
-			
+			if(dbg_updateMatrix) Serial.println("["+String(connectionTimout)+"] "+String(__FUNCTION__)+"("+String(payload[0])+") set Brightness value "); /*KENDBG*/
 			newBri = map(LDRvalue, 0, 1023, minBrightness, maxBrightness);
+			if (newBri < 5) newBri = 0;
 			matrix->setBrightness(newBri);
 		}
 		}
@@ -1209,6 +1269,236 @@ void configModeCallback(WiFiManager *myWiFiManager)
 	matrix->setTextColor(matrix->Color(0, 255, 50));
 	matrix->print("Hotspot");
 	matrix->show();
+}
+
+int getTimeOffset() {
+	HTTPClient http;
+	int httpCode;
+	long ret = 0;
+	http.begin("http://worldtimeapi.org/api/ip/");
+	httpCode = http.GET();
+	if (httpCode == HTTP_CODE_OK) {
+		DynamicJsonBuffer jsonBuffer;
+		JsonObject &json = jsonBuffer.parseObject(http.getString());
+		if (json.success())
+		{
+			int year, month, day, hour, minute, second;
+			ret = json["raw_offset"].as<int>();
+			sscanf(json["datetime"].asString(), "%d-%d-%dT%d:%d:%d", &year, &month, &day, &hour, &minute, &second);
+			setTime(hour, minute, second, day, month, year);
+		}
+	}
+	http.end();
+	return ret;
+}
+
+String handleRoot() {
+  String modeInfo;
+  String ipAddress;
+
+  // Check current WiFi mode
+  if (WiFi.getMode() == WIFI_STA) {
+    modeInfo = "Station Mode";
+    ipAddress = "Station IP address: " + WiFi.localIP().toString();
+  } else {
+    modeInfo = "Access Point Mode";
+    ipAddress = "Access Point IP address: " + WiFi.softAPIP().toString();
+  }
+
+  // HTML response
+  String html = "<html><body>";
+  html += "<p>WiFi Mode: " + modeInfo + "</p>";
+  html += "<p>" + ipAddress + "</p>";
+  html += "<form action='/setup' method='POST'>SSID: <input type='text' name='ssid'><br>Password: <input type='password' name='password'><br><input type='submit' value='Submit'></form>";
+  html += "<form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>";
+  html += "</body></html>";
+
+  server.send(200, "text/html", html);
+  return html;
+}
+
+void checkLDR()
+{
+	static bool first = true;
+	static unsigned long timeStamp = 0;
+	if (first)
+	{
+		newBri = 50;
+		first = false;
+	}
+
+	if (!timeStamp) timeStamp = millis();
+
+	if ((millis() - timeStamp) > 5000)
+	{
+		int ldr = analogRead(LDR_PIN);
+		if (ldr >= 170) ldr=170;
+		if (ldr < 10) ldr = 0;
+		else ldr -= 10;
+		ldr = ldr * 50 / 160 + 2;
+		newBri = ldr;
+		timeStamp = 0;
+		if(!inFade)
+		{
+			matrix->setBrightness(newBri);
+			matrix->show();
+		}
+	}
+}
+
+void appAlert()
+{
+	//appRunAlert;
+	if (appAlertFlag)
+	{
+		appRunClock = false;
+		appClock(1);
+		dfmp3.setRepeatPlayCurrentTrack(true);
+		dfmp3.playMp3FolderTrack(10);
+		appAlertFlag = !appAlertFlag;
+	}
+}
+
+void appClock(int input)
+{
+	int i,j,k;
+	char buffer[50];
+	static bool colon = true;
+	static bool fade = true;
+	static unsigned long timeStamp = 0;
+	static int counter = 1;
+	static int process = 0;
+	//newBri = 50;
+	if (input)
+	{
+		dfmp3.playMp3FolderTrack(3); /* click */
+		process = 3;
+	}
+
+	if (!timeStamp)
+	{
+		timeStamp = millis();
+		matrix->setBrightness(0);
+	}
+
+	switch (process)
+	{
+		case 0: /* time show */
+			if ((millis() - timeStamp) > 1000)
+			{
+				timeStamp = millis();
+				counter++;
+				matrix->clear();
+				matrix->setTextColor(matrix->Color(0, 0, 255));
+				matrix->setCursor(8, 6);
+				if (colon) sprintf(buffer, "%02d:%02d", hour(), minute());
+				else sprintf(buffer, "%02d %02d", hour(), minute());
+				matrix->print(buffer);
+				matrix->drawLine( 0, 7, 31, 7, matrix->Color(00, 00, 00));
+				inFade = false;
+
+				for (j=1; j<8; j++)
+				{
+					k = weekday() - 1;
+					uint16_t color = matrix->Color(80, 80, 80);
+					if (k==0) k=7;
+					if (j==k) color = matrix->Color(255, 255, 255);
+					matrix->drawLine( 4*j-1, 7, 4*j+1, 7, color);
+				}
+				// fade in
+				if (fade)
+				{
+					for (k=1; k<=10; k++)
+					{
+						int b = newBri * (0.1 * k);
+						matrix->setBrightness(b);
+						matrix->show();
+						delay(20);
+					}
+					fade = false;
+				}
+				matrix->show();
+				colon = !colon;
+				//delay(1000);
+				if (counter >= 10)
+				{
+					process = 1;
+					counter = 1;
+				}
+			}
+			break;
+		case 1: /* [animation] switch to date */
+			for (i=1; i<8; i++)
+			{
+				matrix->clear();
+				matrix->setTextColor(matrix->Color(0, 0, 255));
+				sprintf(buffer, "%02d.%02d.", month(), day());
+				matrix->setCursor(8, i-1);
+				matrix->print(buffer);
+				if (colon) sprintf(buffer, "%02d:%02d", hour(), minute());
+				else sprintf(buffer, "%02d %02d", hour(), minute());
+				matrix->setCursor(8, i+5);
+				matrix->print(buffer);
+				matrix->drawLine( 0, 7, 31, 7, matrix->Color(00, 00, 00));
+				for (j=1; j<8; j++)
+				{
+					k = weekday() - 1;
+					uint16_t color = matrix->Color(80, 80, 80);
+					if (k==0) k=7;
+					if (j==k) color = matrix->Color(255, 255, 255);
+					matrix->drawLine( 4*j-1, 7, 4*j+1, 7, color);
+				}
+				matrix->show();
+				delay(60);
+			}
+			process = 2;
+			break;
+		case 2: /* date show */
+			if ((millis() - timeStamp) > 1000)
+			{
+				timeStamp = millis();
+				counter++;
+
+				matrix->clear();
+				sprintf(buffer, "%02d.%02d.", month(), day());
+				matrix->setTextColor(matrix->Color(0, 0, 255));
+				matrix->setCursor(8, 6);
+				matrix->print(buffer);
+				matrix->drawLine( 0, 7, 31, 7, matrix->Color(00, 00, 00));
+				for (j=1; j<8; j++)
+				{
+					k = weekday() - 1;
+					uint16_t color = matrix->Color(80, 80, 80);
+					if (k==0) k=7;
+					if (j==k) color = matrix->Color(255, 255, 255);
+					matrix->drawLine( 4*j-1, 7, 4*j+1, 7, color);
+				}
+				matrix->show();
+				//delay(1000);
+				if (counter >= 10)
+				{
+					process = 3;
+					counter = 1;
+				}
+			}
+			break;
+		case 3: /* fade out */
+			for (i=1; i<=10; i++)
+			{
+				int b = newBri * (1 - (0.1 * i));
+				matrix->setBrightness(b);
+				matrix->show();
+				delay(20);
+			}
+
+			process = 0;
+			counter = 1;
+			timeStamp = 0;
+			colon = true;
+			fade = true;
+			inFade = true;
+			break;
+	}
 }
 
 void setup()
@@ -1477,14 +1767,16 @@ void setup()
 	server.on("/", HTTP_GET, []()
 			  {
 				  server.sendHeader("Connection", "close");
-				  server.send(200, "text/html", serverIndex);
+				  //server.send(200, "text/html", serverIndex);
+				  server.send(200, "text/html", handleRoot());
 			  });
 
 	server.on("/reset", HTTP_GET, []()
 			  {
 				  wifiManager.resetSettings();
 				  ESP.reset();
-				  server.send(200, "text/html", serverIndex);
+				  //server.send(200, "text/html", serverIndex);
+				  server.send(200, "text/html", handleRoot());
 			  });
 	server.on(
 		"/update", HTTP_POST, []()
@@ -1529,6 +1821,17 @@ void setup()
 				Serial.setDebugOutput(false);
 			}
 			yield();
+		});
+
+	server.on("/setup", HTTP_POST, [&]() {
+		String newSSID = server.arg("ssid");
+		String newPassword = server.arg("password");
+
+		// Process the new credentials as needed
+
+		server.send(200, "text/plain", "Setup complete. Restarting...");
+		delay(1000);
+		ESP.restart();
 		});
 
 	server.begin();
@@ -1579,6 +1882,7 @@ void setup()
 	{
 		hardwareAnimatedCheck(MsgType_Audio, 29, 2);
 	}
+	dfmp3.reset();
 
 	if (analogRead(LDR_PIN) > 1)
 	{
@@ -1607,6 +1911,8 @@ void setup()
 	myCounter = 0;
 	myCounter2 = 0;
 
+	//if (!appRun)
+	{
 	for (int x = 32; x >= -90; x--)
 	{
 		matrix->clear();
@@ -1619,6 +1925,11 @@ void setup()
 
 	client.setServer(awtrix_server, atoi(Port));
 	client.setCallback(callback);
+	}
+
+    int offset = getTimeOffset();
+	timeClient.setTimeOffset(offset);
+    timeClient.begin();
 
 	ignoreServer = false;
 
@@ -1631,6 +1942,8 @@ void loop()
 	ArduinoOTA.handle();
 
 	//is needed for the server search animation
+	if (!appRun)
+	{
 	if (firstStart && !ignoreServer)
 	{
 		if (millis() - myTime > 500)
@@ -1644,7 +1957,7 @@ void loop()
 			myTime = millis();
 		}
 	}
-
+	}
 	//not during the falsh process
 	if (!updating)
 	{
@@ -1718,6 +2031,8 @@ void loop()
 		//Wifi
 		if (WIFIConnection || firstStart)
 		{
+			if (!appRun)
+			{
 			//Serial.println("wifi oder first...");
 			if (!client.connected())
 			{
@@ -1734,6 +2049,8 @@ void loop()
 			{
 				client.loop();
 			}
+			}
+			timeClient.update();
 		}
 
 		if (millis() - connectionTimout > 20000)
@@ -1750,6 +2067,8 @@ void loop()
 	//checkTaster(3);
 
 	//is needed for the menue...
+	if (!appRun)
+	{
 	if (ignoreServer)
 	{
 		if (pressedTaster > 0)
@@ -1767,4 +2086,161 @@ void loop()
 			Serial.read();
 		}
 	}
+	}
+
+
+	if (appRun)
+	{
+		checkLDR();
+		if (appRunClock) appClock(0);
+		if (appRunAlert) appAlert();
+	}
+
+	if (Serial.available() > 0)
+	{
+		char buff[50];
+		int input = Serial.read();
+		switch (input)
+		{
+			case '1': // enable/disable debug
+				dbg_updateMatrix = !dbg_updateMatrix;
+				break;
+
+			case '2': // Clock APP
+				appClock(0);
+				break;
+
+			case '3':
+				Serial.println("Station IP address: " + WiFi.localIP().toString());
+				break;
+
+			case '4':
+				{
+				HTTPClient http;
+				int httpCode;
+				//http.begin(espClient,"http://worldtimeapi.org/api/ip/");
+				http.begin("http://worldtimeapi.org/api/ip/");
+				httpCode = http.GET();
+				if (httpCode == HTTP_CODE_OK) {
+					//DynamicJsonDocument jsonDocOffset(1024);
+					//error = deserializeJson(jsonDocOffset, );
+					DynamicJsonBuffer jsonBuffer;
+					JsonObject &json = jsonBuffer.parseObject(http.getString());
+
+					if (json.success())
+					{
+						// Extract the time offset
+						//json["raw_offset"].as<int>();
+						String tempString = json["raw_offset"];
+						Serial.println("Time offset = "+tempString);
+					} else {
+						Serial.println("Failed to parse JSON for time offset");
+					}
+				} else {
+					Serial.println("Failed to fetch time offset");
+				}
+				http.end();
+				}
+				break;
+
+			case '5':
+				ignoreServer = !ignoreServer;
+				break;
+
+			case '6':
+				appRun = !appRun;
+				break;
+			case '7':
+				dfmp3.playMp3FolderTrack(4); /* enter */
+				//dfmp3.loopFolder(1);
+				break;
+			case '8':
+			    dfmp3.playMp3FolderTrack(3); /* click */
+				//dfmp3.stop();
+				break;
+			case '9':
+				{
+					float temp=0, hum=0, hpa=0;
+					switch (tempState)
+					{
+						case TempSensor_BME280:
+							BMESensor.refresh();
+							temp = BMESensor.temperature;
+							hum = BMESensor.humidity;
+							hpa = BMESensor.pressure;
+							break;
+						case TempSensor_HTU21D:
+							temp = htu.readTemperature();
+							hum = htu.readHumidity();
+							hpa = 0;
+							break;
+						case TempSensor_BMP280:
+							sensors_event_t temp_event, pressure_event;
+							BMPSensor.getTemperatureSensor()->getEvent(&temp_event);
+							BMPSensor.getPressureSensor()->getEvent(&pressure_event);
+							temp = temp_event.temperature;
+							hum = 0;
+							hpa = pressure_event.pressure;
+							break;
+					}
+					sprintf(buff,"TempState(%d): temp(%f), hum(%f), hpa(%f)",tempState, temp, hum, hpa);
+					Serial.println(buff);
+				}
+				break;
+
+			case '0':
+				{
+					tasterState[0] = !digitalRead(tasterPin[0]);
+					tasterState[1] = digitalRead(tasterPin[1]);
+					tasterState[2] = !digitalRead(tasterPin[2]);
+					sprintf(buff,"PIN0(%d) PIN1(%d) PIN2(%d)", tasterState[0], tasterState[1], tasterState[2]);
+					Serial.println(buff);
+				}
+				break;
+
+			case 'a':
+				{
+					dfmp3.setRepeatPlayCurrentTrack(true);
+					dfmp3.playMp3FolderTrack(10);
+				}
+				break;
+
+			case 'b':
+				{
+					dfmp3.setRepeatPlayCurrentTrack(false);
+					dfmp3.stop();
+				}
+				break;
+
+			case 'c':
+				{
+
+				}
+				break;
+
+			case 'd':
+				{
+					dfmp3.decreaseVolume();
+				}
+				break;
+
+			case 'e':
+				{
+					dfmp3.increaseVolume();
+				}
+				break;
+
+			case 'f':
+				{
+					appAlertFlag = !appAlertFlag;
+				}
+				break;
+			// Alart APP
+			// Weather APP
+			default:
+				break;
+		}
+	}
 }
+
+
