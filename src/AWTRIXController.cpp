@@ -20,6 +20,7 @@
 #include <NTPClient.h>
 #include <WiFiUdp.h>
 #include <TimeLib.h>
+#include <WiFiClientSecure.h>
 #include <ESP8266HTTPClient.h>
 
 #include <WiFiManager.h>
@@ -32,6 +33,7 @@
 #include <DFMiniMp3.h>
 
 #include "MenueControl/MenueControl.h"
+#include <vector>
 
 // instantiate temp sensor
 BME280<> BMESensor;
@@ -201,6 +203,67 @@ byte utf8ascii(byte ascii)
 			return (0xEA);
 	}
 	return (0);
+}
+
+// Alarm
+struct Alarm {
+    int id;
+    int hour;
+    int minute;
+    bool active;
+};
+std::vector<Alarm> alarms;
+int nextAlarmId = 1;
+
+void addAlarm(int hour, int minute) {
+    Alarm newAlarm = {nextAlarmId++, hour, minute, true};
+    alarms.push_back(newAlarm);
+}
+
+void deleteAlarm(int id) {
+    alarms.erase(std::remove_if(alarms.begin(), alarms.end(), [id](Alarm &alarm) {
+        return alarm.id == id;
+    }), alarms.end());
+}
+
+void editAlarm(int id, int hour, int minute) {
+    for (auto &alarm : alarms) {
+        if (alarm.id == id) {
+            alarm.hour = hour;
+            alarm.minute = minute;
+            alarm.active = true;
+            break;
+        }
+    }
+}
+
+void showAlarmAnimation() {
+    for (int i = 0; i < 3; i++) {
+        matrix->clear();
+        matrix->setTextColor(matrix->Color(255, 0, 0));
+        matrix->setCursor(7, 6);
+        matrix->print("ALARM!");
+        matrix->show();
+        delay(500);
+        matrix->clear();
+        matrix->show();
+        delay(500);
+    }
+}
+
+void checkAlarms() {
+    int currentHour = hour();
+    int currentMinute = minute();
+
+    for (auto &alarm : alarms) {
+        if (alarm.active && alarm.hour == currentHour && alarm.minute == currentMinute) {
+            // Trigger alarm
+            Serial.println("Alarm triggered!");
+            dfmp3.playMp3FolderTrack(10); // Play alarm sound
+			showAlarmAnimation();
+            alarm.active = false; // Deactivate alarm after triggering
+        }
+    }
 }
 
 bool saveConfig()
@@ -1271,24 +1334,103 @@ void configModeCallback(WiFiManager *myWiFiManager)
 	matrix->show();
 }
 
+String getPublicIPAddress() {
+    WiFiClientSecure client;
+    HTTPClient https;
+    String ipAddress = "";
+
+    client.setInsecure();
+    https.begin(client, "https://api.ipify.org?format=json");
+    int httpCode = https.GET();
+
+    if (httpCode == HTTP_CODE_OK) {
+        DynamicJsonBuffer jsonBuffer;
+        JsonObject &json = jsonBuffer.parseObject(https.getString());
+        if (json.success()) {
+            ipAddress = json["ip"].as<String>();
+        }
+    }
+    https.end();
+    client.stop();
+    return ipAddress;
+}
+
+String getTimeZoneFromIPAddress(String ipAddress) {
+    WiFiClientSecure client;
+    HTTPClient https;
+    String timeZone = "";
+
+    client.setInsecure();
+    https.begin(client, "https://ipapi.co/" + ipAddress + "/timezone/");
+    int httpCode = https.GET();
+
+    if (httpCode == HTTP_CODE_OK) {
+        timeZone = https.getString();
+    }
+    https.end();
+    client.stop();
+    return timeZone;
+}
+
+
 int getTimeOffset() {
-	HTTPClient http;
+	WiFiClientSecure client;
+	HTTPClient https;
+	String tz = getTimeZoneFromIPAddress("");
 	int httpCode;
-	long ret = 0;
-	http.begin("http://worldtimeapi.org/api/ip/");
-	httpCode = http.GET();
+	int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+	int ret = 0;
+	client.setInsecure();
+	https.begin(client, "https://timeapi.io/api/time/current/zone?timeZone=" + tz);
+	httpCode = https.GET();
 	if (httpCode == HTTP_CODE_OK) {
 		DynamicJsonBuffer jsonBuffer;
-		JsonObject &json = jsonBuffer.parseObject(http.getString());
+		JsonObject &json = jsonBuffer.parseObject(https.getString());
 		if (json.success())
 		{
-			int year, month, day, hour, minute, second;
-			ret = json["raw_offset"].as<int>();
-			sscanf(json["datetime"].asString(), "%d-%d-%dT%d:%d:%d", &year, &month, &day, &hour, &minute, &second);
+			if (json.containsKey("year"))
+			{
+				year = json["year"].as<int>();
+			}
+			if (json.containsKey("month"))
+			{
+				month = json["month"].as<int>();
+			}
+			if (json.containsKey("day"))
+			{
+				day = json["day"].as<int>();
+			}
+			if (json.containsKey("hour"))
+			{
+				hour = json["hour"].as<int>();
+			}
+			if (json.containsKey("minute"))
+			{
+				minute = json["minute"].as<int>();
+			}
+			if (json.containsKey("seconds"))
+			{
+				second = json["seconds"].as<int>();
+			}
 			setTime(hour, minute, second, day, month, year);
 		}
 	}
-	http.end();
+	https.end();
+	https.begin(client, "https://timeapi.io/api/timezone/zone?timeZone=" + tz);
+	httpCode = https.GET();
+	if (httpCode == HTTP_CODE_OK) {
+		DynamicJsonBuffer jsonBuffer;
+		JsonObject &json = jsonBuffer.parseObject(https.getString());
+		if (json.success())
+		{
+			if (json.containsKey("currentUtcOffset"))
+			{
+				ret = json["currentUtcOffset"]["seconds"].as<int>();
+			}
+		}
+	}
+	https.end();
+	client.stop();
 	return ret;
 }
 
@@ -1306,15 +1448,67 @@ String handleRoot() {
   }
 
   // HTML response
-  String html = "<html><body>";
+  String html = "<html><head><style>";
+  html += "body { font-family: Arial, sans-serif; background-color: #f0f0f0; color: #333; }";
+  html += "h1, h2 { color: #0056b3; }";
+  html += "form { margin-bottom: 20px; }";
+  html += "input[type='text'], input[type='password'], input[type='number'] { padding: 5px; margin: 5px 0; width: 100%; box-sizing: border-box; }";
+  html += "input[type='submit'] { background-color: #0056b3; color: white; border: none; padding: 10px 20px; cursor: pointer; }";
+  html += "input[type='submit']:hover { background-color: #004494; }";
+  html += "ul { list-style-type: none; padding: 0; }";
+  html += "li { background-color: #fff; margin: 5px 0; padding: 10px; border: 1px solid #ccc; }";
+  html += "a { color: #0056b3; text-decoration: none; }";
+  html += "a:hover { text-decoration: underline; }";
+  html += "</style></head><body>";
+  html += "<h1>AWTRIX Controller</h1>";
   html += "<p>WiFi Mode: " + modeInfo + "</p>";
   html += "<p>" + ipAddress + "</p>";
   html += "<form action='/setup' method='POST'>SSID: <input type='text' name='ssid'><br>Password: <input type='password' name='password'><br><input type='submit' value='Submit'></form>";
   html += "<form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>";
+
+  html += "<h2>Current Alarms</h2>";
+  html += "<ul>";
+  for (const auto &alarm : alarms) {
+    html += "<li>Alarm " + String(alarm.id) + ": " + String(alarm.hour) + ":" + String(alarm.minute) + " <a href='/delete?id=" + String(alarm.id) + "'>Delete</a> <a href='/edit?id=" + String(alarm.id) + "'>Edit</a></li>";
+  }
+  html += "</ul>";
+  html += "<h2>Add Alarm</h2>";
+  html += "<form action='/add' method='POST'>Hour: <input type='number' name='hour' min='0' max='23'><br>Minute: <input type='number' name='minute' min='0' max='59'><br><input type='submit' value='Add Alarm'></form>";
+
   html += "</body></html>";
 
   server.send(200, "text/html", html);
   return html;
+}
+
+void handleAddAlarm() {
+    if (server.hasArg("hour") && server.hasArg("minute")) {
+        int hour = server.arg("hour").toInt();
+        int minute = server.arg("minute").toInt();
+        addAlarm(hour, minute);
+    }
+    server.sendHeader("Location", "/");
+    server.send(303);
+}
+
+void handleDeleteAlarm() {
+    if (server.hasArg("id")) {
+        int id = server.arg("id").toInt();
+        deleteAlarm(id);
+    }
+    server.sendHeader("Location", "/");
+    server.send(303);
+}
+
+void handleEditAlarm() {
+    if (server.hasArg("id") && server.hasArg("hour") && server.hasArg("minute")) {
+        int id = server.arg("id").toInt();
+        int hour = server.arg("hour").toInt();
+        int minute = server.arg("minute").toInt();
+        editAlarm(id, hour, minute);
+    }
+    server.sendHeader("Location", "/");
+    server.send(303);
 }
 
 void checkLDR()
@@ -1834,6 +2028,24 @@ void setup()
 		ESP.restart();
 		});
 
+
+	server.on("/add", HTTP_POST, handleAddAlarm);
+	server.on("/delete", HTTP_GET, handleDeleteAlarm);
+	server.on("/edit", HTTP_GET, []() {
+		if (server.hasArg("id")) {
+			int id = server.arg("id").toInt();
+			String html = "<html><body>";
+			html += "<h2>Edit Alarm</h2>";
+			html += "<form action='/edit' method='POST'>Hour: <input type='number' name='hour' min='0' max='23'><br>Minute: <input type='number' name='minute' min='0' max='59'><br><input type='hidden' name='id' value='" + String(id) + "'><br><input type='submit' value='Edit Alarm'></form>";
+			html += "</body></html>";
+			server.send(200, "text/html", html);
+		} else {
+			server.sendHeader("Location", "/");
+			server.send(303);
+		}
+	});
+	server.on("/edit", HTTP_POST, handleEditAlarm);
+
 	server.begin();
 
 	if (shouldSaveConfig)
@@ -2095,6 +2307,8 @@ void loop()
 		if (appRunClock) appClock(0);
 		if (appRunAlert) appAlert();
 	}
+
+	checkAlarms();
 
 	if (Serial.available() > 0)
 	{
